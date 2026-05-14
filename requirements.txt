@@ -1,0 +1,6 @@
+camelot-py[cv]
+pandas
+openpyxl
+streamlit
+numpy
+requests
