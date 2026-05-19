@@ -2,7 +2,7 @@
 extractor.py
 ------------
 Lê o PDF da portaria PMPF e retorna apenas GTIN, preço e vigência.
-Usa Camelot com line_scale=40 (parâmetro correto para este PDF).
+Usa Camelot com line_scale=40.
 """
 
 import re
