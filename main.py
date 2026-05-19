@@ -7,6 +7,7 @@ import streamlit as st
 from pathlib import Path
 
 from extractor import extrair_precos
+
 from comparator import carregar_catalogo, comparar_precos
 from applier import aplicar_mudancas
 
