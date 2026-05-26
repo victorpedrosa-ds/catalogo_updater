@@ -60,6 +60,10 @@ if processar:
     removidos  = resultado['removidos']
     descricoes = resultado['atualizacoes_descricao']
 
+    # Limpa inputs de nome de catálogo de processamentos anteriores
+    for _k in [k for k in st.session_state if k.startswith('nome_cat_')]:
+        del st.session_state[_k]
+
     st.session_state.update({
         'mudancas':            mudancas,
         'novos':               novos,
@@ -182,7 +186,7 @@ def _renderizar_aba(items, chave_aprov, chave_pag, fn_card, default_aprov=True):
 
         col_card, col_chk = st.columns([5, 1])
         with col_card:
-            fn_card(item)
+            fn_card(item, i)
         with col_chk:
             novo_val = st.checkbox('Aprovar', value=aprov, key=f'{chave_pag}_chk_{i}')
             if novo_val != aprov:
@@ -198,7 +202,7 @@ with aba_precos:
     if not mudancas:
         st.success('✅ Nenhuma mudança de preço detectada.')
     else:
-        def card_preco(m):
+        def card_preco(m, _i):
             delta = m['preco_novo'] - m['preco_atual']
             sinal = '📈' if delta > 0 else '📉'
             texto = (
@@ -226,7 +230,7 @@ with aba_novos:
             f'Os aprovados serão adicionados às abas **GTIN**, **PRODUTOS** e **PRECO-VIGENCIA**.'
         )
 
-        def card_novo(p):
+        def card_novo(p, _i):
             sug  = p.get('sugestao')
             vol  = p.get('volume', '')
             emb  = p.get('embalagem', '')
@@ -262,7 +266,7 @@ with aba_removidos:
             f'⚠️ O padrão é **não aprovar** — selecione apenas os que realmente foram removidos da pauta.'
         )
 
-        def card_removido(r):
+        def card_removido(r, _i):
             preco_str = f"R$ {r['ultimo_preco']:.2f}" if r['ultimo_preco'] else '—'
             st.warning(
                 f"🗑️ **{r['nome']}** | GTIN: `{r['gtin']}`\n\n"
@@ -287,16 +291,29 @@ with aba_descricoes:
             f'**MARCA/DESCRIÇÃO** atualizada na aba PRODUTOS.'
         )
 
-        def card_descricao(d):
+        def card_descricao(d, i):
             score = d.get('similaridade', 0)
             cor   = '🟡' if score >= 70 else '🔴'
-            st.info(
-                f"✏️ **{d.get('nome_exibicao', d['gtin'])}** | "
-                f"GTIN: `{d['gtin']}` | ID: `{d['id_produto']}`\n\n"
-                f"**Catálogo atual:** {d.get('nome_atual') or '—'}\n\n"
-                f"**Portaria (novo):** {d.get('nome_novo') or '—'}\n\n"
-                f"{cor} Similaridade: **{score:.0f}%**"
-            )
+
+            col_esq, col_dir = st.columns([3, 2])
+            with col_esq:
+                st.info(
+                    f"✏️ **{d.get('nome_exibicao', d['gtin'])}** | "
+                    f"GTIN: `{d['gtin']}` | ID: `{d['id_produto']}`\n\n"
+                    f"**Catálogo atual:** {d.get('nome_atual') or '—'}\n\n"
+                    f"**Portaria (novo):** {d.get('nome_novo') or '—'}\n\n"
+                    f"{cor} Similaridade: **{score:.0f}%**"
+                )
+            with col_dir:
+                st.caption('✏️ Novo nome para a coluna **Catálogo**:')
+                st.text_input(
+                    'Nome Catálogo',
+                    value=d.get('nome_atual', ''),
+                    key=f'nome_cat_{i}',
+                    label_visibility='collapsed',
+                    placeholder='Digite o nome que ficará no catálogo...',
+                    help='Deixe igual ao atual se não quiser alterar, ou escreva o novo nome desejado.',
+                )
 
         _renderizar_aba(descricoes, 'aprov_descricoes', 'pag_descricoes', card_descricao)
 
@@ -329,7 +346,10 @@ if col_btn.button('💾 Aplicar e salvar catálogo',
     aprovadas_precos    = [mudancas[i]   for i, v in st.session_state['aprov_precos'].items()     if v]
     aprovados_novos     = [novos[i]      for i, v in st.session_state['aprov_novos'].items()      if v]
     aprovados_removidos = [removidos[i]  for i, v in st.session_state['aprov_removidos'].items()  if v]
-    aprovadas_descricoes= [descricoes[i] for i, v in st.session_state['aprov_descricoes'].items() if v]
+    aprovadas_descricoes = [
+        {**descricoes[i], 'nome_catalogo': st.session_state.get(f'nome_cat_{i}', '')}
+        for i, v in st.session_state['aprov_descricoes'].items() if v
+    ]
 
     with st.spinner('Aplicando mudanças e salvando catálogo...'):
         try:

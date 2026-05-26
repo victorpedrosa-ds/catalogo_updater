@@ -127,6 +127,7 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
         embalagem  = str(row.get('EMBALAGEM',  '') or '').strip()
         material   = str(row.get('MATERIAL',   '') or '').strip()
         volume     = str(row.get('VOLUME',     '') or '').strip()
+        ret_desc   = str(row.get('RET_DESC',   '') or '').strip()
 
         gtins_pdf.add(gtin)
 
@@ -139,6 +140,7 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
                 'embalagem':  embalagem,
                 'material':   material,
                 'volume':     volume,
+                'ret_desc':   ret_desc,
                 'preco':      preco_novo,
                 'vigencia':   vigencia,
                 'sugestao':   sugestao,
@@ -247,9 +249,11 @@ def _sugerir_produto_similar(nome_pdf: str, nome_produto: dict) -> dict | None:
 
 
 def _achar_col(df: pd.DataFrame, candidatos: list) -> str | None:
+    import unicodedata
     for nome in candidatos:
+        nome_n = unicodedata.normalize('NFC', nome).strip().upper()
         for col in df.columns:
-            if col.strip().upper() == nome.strip().upper():
+            if unicodedata.normalize('NFC', str(col)).strip().upper() == nome_n:
                 return col
     return None
 

@@ -82,24 +82,52 @@ def aplicar_todas_mudancas(
 # ════════════════════════════════════════════════════════════════════════════
 
 def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
-    """Insere novos produtos nas abas GTIN e PRODUTOS. Retorna {gtin: id_produto}."""
+    """
+    Insere novos produtos nas abas GTIN e PRODUTOS. Retorna {gtin: id_produto}.
+    Preenche todas as colunas com dados do PDF e replica formulas da linha anterior.
+    Sem alteracao de formatacao.
+
+    Estrutura confirmada do catalogo:
+    GTIN  - Col1:ID_linha  Col2:GTIN  Col3:VALIDO  Col4:TIPO GTIN  Col5:Inclusao
+             Col9:FATOR  Col11:ID PRODUTO  Cols12-19: formulas
+    PRODUTOS - Col1:ID  Col2:N.GTINS(formula)  Col3:TIPO  Col4:FABRICANTE
+               Col5:DESC CATALOGO(em branco)  Col6:DESC PORTARIA  Col7:EMBALAGEM
+               Col8:VOLUME(ML)  Col9:MATERIAL  Col10:RETORNAVEL/DESCARTAVEL
+               Col12:CONCATENAR(formula)  Col14:PRODUTO CALC(formula)
+    """
     ws_gtin = wb[ABA_GTIN]
     ws_prod = wb[ABA_PRODUTOS] if ABA_PRODUTOS in wb.sheetnames else None
 
-    # Descobre colunas da aba GTIN
-    col_gtin_n = _col_num(ws_gtin, ['GTIN', 'GTIN / EAN', 'GTIN/EAN'])
-    col_id_n   = _col_num(ws_gtin, ['ID PRODUTO'])
+    # Colunas exatas da aba GTIN
+    col_g_id_linha = _col_num(ws_gtin, ['ID'])
+    col_g_gtin     = _col_num(ws_gtin, ['GTIN'])
+    col_g_valido   = _col_num(ws_gtin, ['VALIDO', 'VALID'])
+    col_g_tipo     = _col_num(ws_gtin, ['TIPO GTIN'])
+    col_g_inclusao = _col_num(ws_gtin, ['Inclusao', 'INCLUSAO'])
+    col_g_fator    = _col_num(ws_gtin, ['FATOR'])
+    col_g_id_prod  = _col_num(ws_gtin, ['ID PRODUTO'])
+    # Usa parcial para acentos nos headers do GTIN
+    if col_g_valido is None:
+        col_g_valido = _col_num_parcial(ws_gtin, ['VALID'])
+    if col_g_inclusao is None:
+        col_g_inclusao = _col_num_parcial(ws_gtin, ['INCLUS'])
 
-    # Descobre colunas da aba PRODUTOS
-    col_prod_id       = _col_num(ws_prod, ['ID'])                        if ws_prod else None
-    # Para novos produtos: preenche apenas PORTARIA; CATÁLOGO fica em branco para preenchimento manual
-    col_prod_portaria = _col_num(ws_prod, ['MARCA/DESCRIÇÃO PORTARIA',
-                                            'MARCA/DESCRICAO PORTARIA']) if ws_prod else None
-    col_prod_concat   = _col_num(ws_prod, ['CONCATENAR GTIN'])           if ws_prod else None
+    # Colunas exatas da aba PRODUTOS
+    if ws_prod:
+        col_p_id       = _col_num(ws_prod, ['ID'])
+        col_p_fab      = _col_num(ws_prod, ['FABRICANTE'])
+        col_p_portaria = _col_num_parcial(ws_prod, ['PORTARIA'])
+        col_p_emb      = _col_num(ws_prod, ['EMBALAGEM'])
+        col_p_vol      = _col_num_parcial(ws_prod, ['VOLUME'])
+        col_p_mat      = _col_num(ws_prod, ['MATERIAL'])
+        col_p_ret      = _col_num_parcial(ws_prod, ['RETORN', 'DESCART'])
+    else:
+        col_p_id = col_p_fab = col_p_portaria = None
+        col_p_emb = col_p_vol = col_p_mat = col_p_ret = None
 
-    proximo_id = _proximo_id_disponivel(wb)
-    ids_novos  = {}
-    fill_novo  = PatternFill('solid', fgColor=COR_NOVO)
+    proximo_id_produto = _proximo_id_disponivel(wb)
+    ids_novos          = {}
+    hoje               = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     for novo in novos_aprovados:
         gtin       = novo['gtin']
@@ -108,43 +136,95 @@ def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
         embalagem  = novo.get('embalagem', '')
         material   = novo.get('material', '')
         volume     = novo.get('volume', '')
-        id_produto = proximo_id
+        ret_desc      = novo.get('ret_desc', '')
+        tipo_portaria = novo.get('tipo_portaria', 'REFRIGERANTE')
+        id_produto    = proximo_id_produto
 
         ids_novos[gtin] = id_produto
 
-        # ── Inserir na aba GTIN ───────────────────────────────────────────────
+        # Inserir na aba GTIN
         ultima_gtin = _ultima_linha_com_dado(ws_gtin)
-        nova_linha  = ultima_gtin + 1
+        nova_g      = ultima_gtin + 1
 
-        if col_gtin_n:
-            ws_gtin.cell(nova_linha, col_gtin_n).value = gtin
-        if col_id_n:
-            ws_gtin.cell(nova_linha, col_id_n).value   = id_produto
+        if col_g_id_linha:
+            ultimo_id_g = ws_gtin.cell(ultima_gtin, col_g_id_linha).value
+            try:
+                proximo_id_g = int(str(ultimo_id_g).strip()) + 1
+            except (TypeError, ValueError):
+                proximo_id_g = nova_g
+            ws_gtin.cell(nova_g, col_g_id_linha).value = proximo_id_g
 
-        _colorir_linha(ws_gtin, nova_linha, fill_novo)
+        if col_g_gtin:
+            ws_gtin.cell(nova_g, col_g_gtin).value    = gtin
+        if col_g_valido:
+            ws_gtin.cell(nova_g, col_g_valido).value  = True
+        if col_g_tipo:
+            # Usa o titulo exato do anexo para compor o TIPO GTIN.
+            # Formato: 'GTIN PORTARIA - {TITULO DO ANEXO}'
+            # Funciona para qualquer tipo presente ou futuro na portaria.
+            if tipo_portaria:
+                tipo_gtin_val = f'GTIN PORTARIA - {tipo_portaria}'
+            else:
+                # Fallback: copia da linha anterior
+                tipo_anterior = ws_gtin.cell(ultima_gtin, col_g_tipo).value
+                tipo_gtin_val = (tipo_anterior
+                                 if tipo_anterior and not str(tipo_anterior).startswith('=')
+                                 else None)
+            if tipo_gtin_val:
+                ws_gtin.cell(nova_g, col_g_tipo).value = tipo_gtin_val
+        if col_g_inclusao:
+            ws_gtin.cell(nova_g, col_g_inclusao).value = hoje
+        if col_g_fator:
+            ws_gtin.cell(nova_g, col_g_fator).value   = 1
+        if col_g_id_prod:
+            ws_gtin.cell(nova_g, col_g_id_prod).value = id_produto
 
-        # ── Inserir na aba PRODUTOS ───────────────────────────────────────────
+        _replicar_formulas(ws_gtin, ultima_gtin, nova_g, colunas_preenchidas={
+            c for c in [col_g_id_linha, col_g_gtin, col_g_valido,
+                        col_g_tipo, col_g_inclusao, col_g_fator, col_g_id_prod]
+            if c is not None
+        })
+
+        # Inserir na aba PRODUTOS
         if ws_prod:
             ultima_prod = _ultima_linha_com_dado(ws_prod)
-            nova_prod   = ultima_prod + 1
+            nova_p      = ultima_prod + 1
 
-            if col_prod_id:
-                ws_prod.cell(nova_prod, col_prod_id).value = id_produto
-            if col_prod_portaria:
-                # Copia exatamente o nome da portaria; CATÁLOGO fica em branco (preenchimento manual)
-                ws_prod.cell(nova_prod, col_prod_portaria).value = nome
-            if col_prod_concat:
-                partes = [str(p) for p in [gtin, nome, f"{volume}ml" if volume else '',
-                                            embalagem, material] if p]
-                ws_prod.cell(nova_prod, col_prod_concat).value = ' '.join(partes)
+            if col_p_id:
+                ws_prod.cell(nova_p, col_p_id).value       = id_produto
+            # Col 3: TIPO — usa o titulo exato do anexo no PDF.
+            # Aberto para qualquer tipo futuro sem necessidade de alterar o codigo.
+            col_p_tipo = _col_num(ws_prod, ['TIPO'])
+            if col_p_tipo and tipo_portaria:
+                ws_prod.cell(nova_p, col_p_tipo).value = tipo_portaria
 
-            _colorir_linha(ws_prod, nova_prod, fill_novo)
+            if col_p_fab:
+                ws_prod.cell(nova_p, col_p_fab).value      = fabricante or None
+            if col_p_portaria:
+                ws_prod.cell(nova_p, col_p_portaria).value = nome or None
+            if col_p_emb:
+                ws_prod.cell(nova_p, col_p_emb).value      = embalagem or None
+            if col_p_vol and volume:
+                try:
+                    ws_prod.cell(nova_p, col_p_vol).value  = int(volume)
+                except (ValueError, TypeError):
+                    ws_prod.cell(nova_p, col_p_vol).value  = volume
+            if col_p_mat:
+                ws_prod.cell(nova_p, col_p_mat).value      = material or None
+            if col_p_ret:
+                ws_prod.cell(nova_p, col_p_ret).value      = ret_desc or None
+            # Col 5 MARCA/DESCRICAO CATALOGO: em branco para preenchimento manual
 
-        print(f"[Applier] Novo: GTIN {gtin} → ID {id_produto} | {nome}")
-        proximo_id += 1
+            _replicar_formulas(ws_prod, ultima_prod, nova_p, colunas_preenchidas={
+                c for c in [col_p_id, col_p_fab, col_p_portaria,
+                             col_p_emb, col_p_vol, col_p_mat, col_p_ret]
+                if c is not None
+            })
+
+        print(f"[Applier] Novo: GTIN {gtin} -> ID_PRODUTO {id_produto} | {nome}")
+        proximo_id_produto += 1
 
     return ids_novos
-
 
 def _inserir_precos_novos(wb, novos_aprovados: list[dict], ids_novos: dict):
     """Insere o preço inicial dos novos produtos em PRECO-VIGENCIA."""
@@ -269,22 +349,32 @@ def _marcar_removidos(wb, removidos_aprovados: list[dict]):
 # ════════════════════════════════════════════════════════════════════════════
 
 def _atualizar_descricoes(wb, descricoes_aprovadas: list[dict]):
-    """Atualiza apenas a coluna MARCA/DESCRIÇÃO PORTARIA na aba PRODUTOS.
-    A coluna MARCA/DESCRIÇÃO CATÁLOGO nunca é alterada pelo programa."""
+    """
+    Atualiza descrições na aba PRODUTOS:
+      - MARCA/DESCRIÇÃO PORTARIA → nome exato da portaria (nome_novo)
+      - MARCA/DESCRIÇÃO CATÁLOGO → nome digitado pelo usuário na interface (nome_catalogo)
+                                    se em branco, mantém o valor anterior
+    """
     if ABA_PRODUTOS not in wb.sheetnames:
         return
 
     ws_prod = wb[ABA_PRODUTOS]
     col_prod_id       = _col_num(ws_prod, ['ID'])
-    col_prod_portaria = _col_num(ws_prod, ['MARCA/DESCRIÇÃO PORTARIA',
-                                            'MARCA/DESCRICAO PORTARIA'])
+    col_prod_portaria = _col_num_parcial(ws_prod, ['PORTARIA'])
+    col_prod_catalogo = _col_num_parcial(ws_prod, ['CATALOGO', 'CATÁLOGO'])
 
     if not col_prod_id or not col_prod_portaria:
         print("[Applier] Atenção: coluna ID ou MARCA/DESCRIÇÃO PORTARIA não encontrada em PRODUTOS.")
         return
 
-    atualizacoes    = {d['id_produto']: d['nome_novo'] for d in descricoes_aprovadas}
-    fill_atualizado = PatternFill('solid', fgColor=COR_DESCRICAO)
+    # {id_produto: {'nome_novo': ..., 'nome_catalogo': ...}}
+    atualizacoes = {
+        d['id_produto']: {
+            'nome_novo':      d.get('nome_novo', ''),
+            'nome_catalogo':  d.get('nome_catalogo', '').strip(),
+        }
+        for d in descricoes_aprovadas
+    }
 
     for row in ws_prod.iter_rows(min_row=2):
         id_cell = row[col_prod_id - 1]
@@ -293,13 +383,28 @@ def _atualizar_descricoes(wb, descricoes_aprovadas: list[dict]):
         except (ValueError, TypeError):
             continue
 
-        if id_prod in atualizacoes:
-            portaria_cell = row[col_prod_portaria - 1]
-            nome_antigo   = portaria_cell.value
-            portaria_cell.value = atualizacoes[id_prod]
-            portaria_cell.fill  = fill_atualizado
-            print(f"[Applier] Descrição portaria atualizada ID {id_prod}: "
-                  f"'{nome_antigo}' → '{atualizacoes[id_prod]}'")
+        if id_prod not in atualizacoes:
+            continue
+
+        upd = atualizacoes[id_prod]
+
+        # Atualiza coluna PORTARIA
+        portaria_cell       = row[col_prod_portaria - 1]
+        nome_antigo_port    = portaria_cell.value
+        portaria_cell.value = upd['nome_novo']
+
+        # Atualiza coluna CATÁLOGO (somente se o usuário digitou algo)
+        nome_cat = upd['nome_catalogo']
+        if col_prod_catalogo and nome_cat:
+            catalogo_cell       = row[col_prod_catalogo - 1]
+            nome_antigo_cat     = catalogo_cell.value
+            catalogo_cell.value = nome_cat
+            print(f"[Applier] ID {id_prod} — Portaria: '{nome_antigo_port}' → '{upd['nome_novo']}' | "
+                  f"Catálogo: '{nome_antigo_cat}' → '{nome_cat}'")
+        else:
+            print(f"[Applier] ID {id_prod} — Portaria atualizada: '{nome_antigo_port}' → '{upd['nome_novo']}' "
+                  f"(catálogo mantido)")
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -419,15 +524,17 @@ def _gerar_relatorio(wb, mudancas, novos, removidos, descricoes):
 # ════════════════════════════════════════════════════════════════════════════
 
 def _col_num(ws, candidatos: list) -> int | None:
-    """Retorna o número (1-indexed) da coluna cujo cabeçalho bate com um dos candidatos."""
+    """Retorna o número (1-indexed) da coluna cujo cabeçalho bate com um dos candidatos.
+    Normaliza Unicode (NFC) antes de comparar para evitar falsos negativos com acentos."""
+    import unicodedata
     if ws is None:
         return None
     for row in ws.iter_rows(min_row=1, max_row=3):
         for cell in row:
             if cell.value is not None:
-                val = str(cell.value).strip().upper()
+                val = unicodedata.normalize('NFC', str(cell.value)).strip().upper()
                 for cand in candidatos:
-                    if val == cand.strip().upper():
+                    if val == unicodedata.normalize('NFC', cand).strip().upper():
                         return cell.column
     return None
 
@@ -474,3 +581,37 @@ def _ajustar_formula(formula: str, linha_origem: int, linha_destino: int) -> str
             return f"{col_letra}{linha_destino}"
         return m.group(0)
     return re.sub(r'([A-Z]+)(\d+)', substituir, formula)
+
+def _replicar_formulas(ws, linha_origem: int, linha_destino: int, colunas_preenchidas: set):
+    """
+    Para cada coluna da linha_origem que contenha uma fórmula (começa com '=')
+    e cujo número NÃO esteja em colunas_preenchidas, copia a fórmula ajustada
+    para a linha_destino. Isso garante que fórmulas como CONT.SE (coluna B)
+    sejam replicadas automaticamente em novas linhas.
+    """
+    for col in range(1, ws.max_column + 1):
+        if col in colunas_preenchidas:
+            continue
+        cell_origem = ws.cell(linha_origem, col)
+        valor = cell_origem.value
+        if valor and str(valor).startswith('='):
+            nova_formula = _ajustar_formula(str(valor), linha_origem, linha_destino)
+            ws.cell(linha_destino, col).value = nova_formula
+
+
+def _col_num_parcial(ws, fragmentos: list) -> int | None:
+    """
+    Retorna o número (1-indexed) da primeira coluna cujo cabeçalho contenha
+    pelo menos um dos fragmentos (case-insensitive, normalizado Unicode).
+    """
+    import unicodedata
+    if ws is None:
+        return None
+    for row in ws.iter_rows(min_row=1, max_row=3):
+        for cell in row:
+            if cell.value is not None:
+                val = unicodedata.normalize('NFC', str(cell.value)).strip().upper()
+                for frag in fragmentos:
+                    if unicodedata.normalize('NFC', frag).upper() in val:
+                        return cell.column
+    return None
