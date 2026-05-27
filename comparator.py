@@ -29,15 +29,31 @@ def carregar_catalogo(caminho_xlsx: str) -> dict:
 
     col_gtin_val = _achar_col(df_gtin, ['GTIN'])
     col_id_prod  = _achar_col(df_gtin, ['ID PRODUTO'])
+    col_valido   = _achar_col(df_gtin, ['VÁLIDO', 'VALIDO'])
 
-    gtin_para_id = {}
+    gtin_para_id   = {}   # {gtin: id_produto} — apenas GTINs com VÁLIDO=True
+    gtins_invalidos = set()  # GTINs já marcados como FALSO no catálogo
+
     for _, row in df_gtin.iterrows():
         gtin = re.sub(r'\D', '', str(row[col_gtin_val]))
         id_p = str(row[col_id_prod]).strip()
-        if len(gtin) >= 8 and id_p.isdigit():
-            gtin_para_id[gtin] = int(id_p)
+        if len(gtin) < 8 or not id_p.isdigit():
+            continue
 
-    print(f"[Comparador] {len(gtin_para_id)} GTINs mapeados.")
+        # Verifica se o GTIN está ativo (VÁLIDO = True/VERDADEIRO)
+        valido = True
+        if col_valido:
+            val = str(row.get(col_valido, '')).strip().upper()
+            if val in ('FALSE', 'FALSO', '0', 'NÃO', 'NAO', 'NO'):
+                valido = False
+
+        if valido:
+            gtin_para_id[gtin] = int(id_p)
+        else:
+            gtins_invalidos.add(gtin)
+
+    print(f"[Comparador] {len(gtin_para_id)} GTINs ativos mapeados "
+          f"({len(gtins_invalidos)} já marcados como inválidos ignorados).")
 
     # ── Preço mais recente por ID_PRODUTO ─────────────────────────────────────
     df_preco = pd.read_excel(caminho_xlsx, sheet_name=ABA_PRECO, dtype=str)
@@ -92,9 +108,10 @@ def carregar_catalogo(caminho_xlsx: str) -> dict:
             descricao_catalog[id_int] = desc_port
 
     return {
-        'gtin_para_id':     gtin_para_id,
-        'preco_atual':      preco_atual,
-        'nome_produto':     nome_produto,
+        'gtin_para_id':      gtin_para_id,
+        'gtins_invalidos':   gtins_invalidos,
+        'preco_atual':       preco_atual,
+        'nome_produto':      nome_produto,
         'descricao_catalog': descricao_catalog,
     }
 
@@ -121,29 +138,31 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
     for _, row in df_pdf.iterrows():
         gtin       = str(row['GTIN']).strip()
         preco_novo = row['PRECO']
-        vigencia   = str(row.get('VIGENCIA',   '') or '').strip()
-        nome_pdf   = str(row.get('NOME',       '') or '').strip()
-        fabricante = str(row.get('FABRICANTE', '') or '').strip()
-        embalagem  = str(row.get('EMBALAGEM',  '') or '').strip()
-        material   = str(row.get('MATERIAL',   '') or '').strip()
-        volume     = str(row.get('VOLUME',     '') or '').strip()
-        ret_desc   = str(row.get('RET_DESC',   '') or '').strip()
+        vigencia       = str(row.get('VIGENCIA',      '') or '').strip()
+        nome_pdf       = str(row.get('NOME',          '') or '').strip()
+        fabricante     = str(row.get('FABRICANTE',    '') or '').strip()
+        embalagem      = str(row.get('EMBALAGEM',     '') or '').strip()
+        material       = str(row.get('MATERIAL',      '') or '').strip()
+        volume         = str(row.get('VOLUME',        '') or '').strip()
+        ret_desc       = str(row.get('RET_DESC',      '') or '').strip()
+        tipo_portaria  = str(row.get('TIPO_PORTARIA', '') or '').strip()
 
         gtins_pdf.add(gtin)
 
         if gtin not in gtin_para_id:
             sugestao = _sugerir_produto_similar(nome_pdf, nome_produto)
             novos.append({
-                'gtin':       gtin,
-                'nome_pdf':   nome_pdf,
-                'fabricante': fabricante,
-                'embalagem':  embalagem,
-                'material':   material,
-                'volume':     volume,
-                'ret_desc':   ret_desc,
-                'preco':      preco_novo,
-                'vigencia':   vigencia,
-                'sugestao':   sugestao,
+                'gtin':          gtin,
+                'nome_pdf':      nome_pdf,
+                'fabricante':    fabricante,
+                'embalagem':     embalagem,
+                'material':      material,
+                'volume':        volume,
+                'ret_desc':      ret_desc,
+                'tipo_portaria': tipo_portaria,
+                'preco':         preco_novo,
+                'vigencia':      vigencia,
+                'sugestao':      sugestao,
             })
             continue
 
@@ -183,6 +202,8 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
             })
 
     # ── Removidos da portaria ─────────────────────────────────────────────────
+    # Considera apenas GTINs com VÁLIDO=True no catálogo.
+    # GTINs já marcados como FALSO são ignorados — já foram removidos anteriormente.
     removidos = []
     for gtin, id_prod in gtin_para_id.items():
         if gtin not in gtins_pdf:
@@ -249,11 +270,15 @@ def _sugerir_produto_similar(nome_pdf: str, nome_produto: dict) -> dict | None:
 
 
 def _achar_col(df: pd.DataFrame, candidatos: list) -> str | None:
+    """Busca coluna por nome exato, sem acentos, para máxima compatibilidade."""
     import unicodedata
+    def _sem_acento(s: str) -> str:
+        nfd = unicodedata.normalize('NFD', str(s))
+        return ''.join(c for c in nfd if not unicodedata.combining(c)).strip().upper()
     for nome in candidatos:
-        nome_n = unicodedata.normalize('NFC', nome).strip().upper()
+        nome_n = _sem_acento(nome)
         for col in df.columns:
-            if unicodedata.normalize('NFC', str(col)).strip().upper() == nome_n:
+            if _sem_acento(col) == nome_n:
                 return col
     return None
 

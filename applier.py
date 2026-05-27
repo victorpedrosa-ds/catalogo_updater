@@ -23,6 +23,7 @@ ABA_GTIN      = 'GTIN'
 ABA_PRECO     = 'PRECO-VIGENCIA'
 ABA_PRODUTOS  = 'PRODUTOS'
 ABA_RELATORIO = 'Relatório'
+ABA_CATALOGO  = 'CATALOGO'
 
 COR_NOVO     = 'C6EFCE'   # verde claro
 COR_REMOVIDO = 'FFC7CE'   # vermelho claro
@@ -185,6 +186,10 @@ def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
             if c is not None
         })
 
+        # Adiciona linha correspondente na aba CATALOGO apontando para nova_g
+        if ABA_CATALOGO in wb.sheetnames:
+            _inserir_linha_catalogo(wb[ABA_CATALOGO], nova_g)
+
         # Inserir na aba PRODUTOS
         if ws_prod:
             ultima_prod = _ultima_linha_com_dado(ws_prod)
@@ -320,28 +325,28 @@ def _aplicar_precos(wb, mudancas_aprovadas: list[dict]):
 # ════════════════════════════════════════════════════════════════════════════
 
 def _marcar_removidos(wb, removidos_aprovados: list[dict]):
-    """Marca as linhas dos GTINs removidos na aba GTIN com cor e comentário."""
+    """
+    Para cada GTIN removido aprovado, localiza sua(s) linha(s) na aba GTIN
+    e altera apenas a coluna VALIDO para False.
+    Nenhuma outra informacao e alterada ou apagada.
+    """
     ws_gtin = wb[ABA_GTIN]
-    col_gtin_n = _col_num(ws_gtin, ['GTIN', 'GTIN / EAN', 'GTIN/EAN'])
-    if not col_gtin_n:
+
+    col_gtin_n = _col_num(ws_gtin, ['GTIN'])
+    col_valido = _col_num(ws_gtin, ['VÁLIDO', 'VALIDO'])
+
+    if not col_gtin_n or not col_valido:
+        print("[Applier] Atencao: coluna GTIN ou VALIDO nao encontrada na aba GTIN.")
         return
 
     gtins_remover = {re.sub(r'\D', '', str(r['gtin'])) for r in removidos_aprovados}
-    fill_removido = PatternFill('solid', fgColor=COR_REMOVIDO)
-    ts = datetime.now().strftime('%d/%m/%Y')
 
     for row in ws_gtin.iter_rows(min_row=2):
         cell_gtin = row[col_gtin_n - 1]
         gtin = re.sub(r'\D', '', str(cell_gtin.value or ''))
         if gtin in gtins_remover:
-            _colorir_linha(ws_gtin, cell_gtin.row, fill_removido)
-            try:
-                cell_gtin.comment = Comment(
-                    f'Removido da portaria em {ts}', 'PMPF Updater'
-                )
-            except Exception:
-                pass
-            print(f"[Applier] Removido marcado: GTIN {gtin}")
+            row[col_valido - 1].value = False
+            print(f"[Applier] GTIN {gtin} marcado como INVALIDO (VALIDO = False)")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -525,16 +530,20 @@ def _gerar_relatorio(wb, mudancas, novos, removidos, descricoes):
 
 def _col_num(ws, candidatos: list) -> int | None:
     """Retorna o número (1-indexed) da coluna cujo cabeçalho bate com um dos candidatos.
-    Normaliza Unicode (NFC) antes de comparar para evitar falsos negativos com acentos."""
+    Compara SEM acentos (NFD strip) para garantir que VÁLIDO == VALIDO,
+    evitando falsos negativos por diferença de codificação."""
     import unicodedata
+    def _sem_acento(s: str) -> str:
+        nfd = unicodedata.normalize('NFD', str(s))
+        return ''.join(c for c in nfd if not unicodedata.combining(c)).strip().upper()
     if ws is None:
         return None
     for row in ws.iter_rows(min_row=1, max_row=3):
         for cell in row:
             if cell.value is not None:
-                val = unicodedata.normalize('NFC', str(cell.value)).strip().upper()
+                val = _sem_acento(cell.value)
                 for cand in candidatos:
-                    if val == unicodedata.normalize('NFC', cand).strip().upper():
+                    if val == _sem_acento(cand):
                         return cell.column
     return None
 
@@ -602,16 +611,61 @@ def _replicar_formulas(ws, linha_origem: int, linha_destino: int, colunas_preenc
 def _col_num_parcial(ws, fragmentos: list) -> int | None:
     """
     Retorna o número (1-indexed) da primeira coluna cujo cabeçalho contenha
-    pelo menos um dos fragmentos (case-insensitive, normalizado Unicode).
+    pelo menos um dos fragmentos — comparação sem acentos para robustez.
     """
     import unicodedata
+    def _sem_acento(s: str) -> str:
+        nfd = unicodedata.normalize('NFD', str(s))
+        return ''.join(c for c in nfd if not unicodedata.combining(c)).strip().upper()
     if ws is None:
         return None
     for row in ws.iter_rows(min_row=1, max_row=3):
         for cell in row:
             if cell.value is not None:
-                val = unicodedata.normalize('NFC', str(cell.value)).strip().upper()
+                val = _sem_acento(cell.value)
                 for frag in fragmentos:
-                    if unicodedata.normalize('NFC', frag).upper() in val:
+                    if _sem_acento(frag) in val:
                         return cell.column
     return None
+
+
+def _inserir_linha_catalogo(ws_cat, linha_gtin: int):
+    """
+    Adiciona uma nova linha na aba CATALOGO correspondente ao novo GTIN
+    inserido na linha `linha_gtin` da aba GTIN.
+
+    Estrutura da aba CATALOGO (confirmada):
+      Col 1  : ID sequencial (número inteiro)
+      Col 2  : =GTIN!B{linha_gtin}   ← aponta para a linha do GTIN
+      Col 3-20: fórmulas que referenciam a linha atual do CATALOGO
+
+    Estratégia: replica todas as fórmulas da última linha, ajustando
+    o número de linha. A coluna 2 recebe uma fórmula especial que
+    aponta para o GTIN correto na aba GTIN.
+    """
+    ultima_cat = _ultima_linha_com_dado(ws_cat)
+    nova_cat   = ultima_cat + 1
+
+    # Col 1: próximo ID sequencial
+    ultimo_id = ws_cat.cell(ultima_cat, 1).value
+    try:
+        proximo_id_cat = int(str(ultimo_id).strip()) + 1
+    except (TypeError, ValueError):
+        proximo_id_cat = nova_cat - 1
+    ws_cat.cell(nova_cat, 1).value = proximo_id_cat
+
+    # Col 2: aponta diretamente para a linha correta na aba GTIN
+    ws_cat.cell(nova_cat, 2).value = f'=GTIN!B{linha_gtin}'
+
+    # Cols 3-20: replica as demais fórmulas da linha anterior,
+    # ajustando apenas as referências de linha do CATALOGO.
+    # A col 2 já foi preenchida acima (referência ao GTIN é fixa).
+    for col in range(3, ws_cat.max_column + 1):
+        formula_ref = ws_cat.cell(ultima_cat, col).value
+        if formula_ref and str(formula_ref).startswith('='):
+            nova_formula = _ajustar_formula(
+                str(formula_ref), ultima_cat, nova_cat
+            )
+            ws_cat.cell(nova_cat, col).value = nova_formula
+
+    print(f"[Applier] CATALOGO: nova linha {nova_cat} → GTIN!B{linha_gtin} (ID {proximo_id_cat})")
