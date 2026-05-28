@@ -89,12 +89,14 @@ def carregar_catalogo(caminho_xlsx: str) -> dict:
 
     col_id_p   = _achar_col(df_prod, ['ID'])
     col_concat = _achar_col(df_prod, ['CONCATENAR GTIN'])
+    col_tipo   = _achar_col(df_prod, ['TIPO'])
     # Para comparação usamos PORTARIA (o que estava na última portaria processada)
     col_desc_portaria = _achar_col(df_prod, ['MARCA/DESCRIÇÃO PORTARIA', 'MARCA/DESCRICAO PORTARIA'])
     # Para exibição usamos CATÁLOGO (o nome escolhido pelo usuário)
     col_desc_catalogo = _achar_col(df_prod, ['MARCA/DESCRIÇÃO CATÁLOGO', 'MARCA/DESCRICAO CATALOGO'])
 
     nome_produto      = {}   # nome para exibição (CONCATENAR GTIN ou CATÁLOGO)
+    tipo_produto      = {}   # TIPO de cada produto (para filtrar removidos por categoria)
     descricao_catalog = {}   # descrição PORTARIA anterior (para comparar com novo PDF)
 
     for _, row in df_prod.iterrows():
@@ -103,7 +105,7 @@ def carregar_catalogo(caminho_xlsx: str) -> dict:
             id_int = int(id_p)
             nome = str(row.get(col_concat) or row.get(col_desc_catalogo) or '').strip()
             nome_produto[id_int] = nome
-            # Usa a descrição portaria (se existir) para comparar com o PDF atual
+            tipo_produto[id_int] = str(row.get(col_tipo) or '').strip() if col_tipo else ''
             desc_port = str(row.get(col_desc_portaria) or '').strip() if col_desc_portaria else ''
             descricao_catalog[id_int] = desc_port
 
@@ -112,6 +114,7 @@ def carregar_catalogo(caminho_xlsx: str) -> dict:
         'gtins_invalidos':   gtins_invalidos,
         'preco_atual':       preco_atual,
         'nome_produto':      nome_produto,
+        'tipo_produto':      tipo_produto,
         'descricao_catalog': descricao_catalog,
     }
 
@@ -127,7 +130,21 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
     gtin_para_id      = catalogo['gtin_para_id']
     preco_atual       = catalogo['preco_atual']
     nome_produto      = catalogo['nome_produto']
+    tipo_produto      = catalogo.get('tipo_produto', {})
     descricao_catalog = catalogo.get('descricao_catalog', {})
+
+    # Coleta as categorias presentes no PDF para filtrar removidos.
+    # Ex: PDF de refrigerantes/energéticos não deve flaggar cervejas como removidas.
+    keywords_pdf = set()
+    for _, row in df_pdf.iterrows():
+        tipo = str(row.get('TIPO_PORTARIA', '')).strip()
+        keywords_pdf.update(_tipo_keywords(tipo))
+    print(f"[Comparador] Categorias detectadas no PDF: {keywords_pdf}")
+
+    # Conjunto de TIPOs já existentes no catálogo (para evitar criar duplicatas
+    # como REFRIGERANTE vs REFRIGERANTES quando inserir produtos novos)
+    tipos_existentes = {t for t in tipo_produto.values() if t and t.strip()}
+    print(f"[Comparador] TIPOs existentes no catálogo: {tipos_existentes}")
 
     mudancas              = []
     novos                 = []
@@ -151,6 +168,8 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
 
         if gtin not in gtin_para_id:
             sugestao = _sugerir_produto_similar(nome_pdf, nome_produto)
+            # Resolve TIPO: usa valor já existente no catálogo se houver match exato
+            tipo_canonico = _resolver_tipo_canonico(tipo_portaria, tipos_existentes)
             novos.append({
                 'gtin':          gtin,
                 'nome_pdf':      nome_pdf,
@@ -159,7 +178,7 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
                 'material':      material,
                 'volume':        volume,
                 'ret_desc':      ret_desc,
-                'tipo_portaria': tipo_portaria,
+                'tipo_portaria': tipo_canonico,
                 'preco':         preco_novo,
                 'vigencia':      vigencia,
                 'sugestao':      sugestao,
@@ -204,18 +223,35 @@ def comparar_precos(df_pdf: pd.DataFrame, catalogo: dict) -> dict:
     # ── Removidos da portaria ─────────────────────────────────────────────────
     # Considera apenas GTINs com VÁLIDO=True no catálogo.
     # GTINs já marcados como FALSO são ignorados — já foram removidos anteriormente.
-    removidos = []
+    # FILTRO POR CATEGORIA: só inclui produtos cujo TIPO bate com alguma categoria do PDF.
+    # Ex: PDF de refrigerantes não vai flaggar cervejas como removidas.
+    removidos     = []
+    ignorados_cat = 0
     for gtin, id_prod in gtin_para_id.items():
-        if gtin not in gtins_pdf:
-            nome       = nome_produto.get(id_prod, f'ID {id_prod}')
-            info_preco = preco_atual.get(id_prod, {})
-            removidos.append({
-                'gtin':            gtin,
-                'id_produto':      id_prod,
-                'nome':            nome,
-                'ultimo_preco':    info_preco.get('preco'),
-                'ultima_vigencia': info_preco.get('vigencia', ''),
-            })
+        if gtin in gtins_pdf:
+            continue
+
+        # Filtro de categoria
+        tipo_cat       = tipo_produto.get(id_prod, '')
+        keywords_cat   = _tipo_keywords(tipo_cat)
+        if keywords_pdf and keywords_cat and not (keywords_cat & keywords_pdf):
+            # Produto é de categoria que não está nesta portaria — ignora
+            ignorados_cat += 1
+            continue
+
+        nome       = nome_produto.get(id_prod, f'ID {id_prod}')
+        info_preco = preco_atual.get(id_prod, {})
+        removidos.append({
+            'gtin':            gtin,
+            'id_produto':      id_prod,
+            'nome':            nome,
+            'tipo':            tipo_cat,
+            'ultimo_preco':    info_preco.get('preco'),
+            'ultima_vigencia': info_preco.get('vigencia', ''),
+        })
+
+    if ignorados_cat:
+        print(f"[Comparador] {ignorados_cat} produto(s) ignorado(s) — categoria fora do PDF.")
 
     print(
         f"[Comparador] {len(mudancas)} mudança(s) de preço | "
@@ -267,6 +303,55 @@ def _sugerir_produto_similar(nome_pdf: str, nome_produto: dict) -> dict | None:
         'nome':       resultado[0],
         'score':      resultado[1],
     }
+
+
+
+
+def _resolver_tipo_canonico(tipo_pdf: str, tipos_existentes: set) -> str:
+    """
+    Procura um TIPO já existente no catálogo cujos keywords casem exatamente
+    com os do tipo_pdf. Se encontrar, retorna o valor canônico do catálogo
+    (evita criar duplicatas como REFRIGERANTE vs REFRIGERANTES).
+    Se não encontrar, retorna o tipo_pdf como está.
+
+    Exemplos:
+      tipo_pdf='REFRIGERANTES', tipos_existentes={'CERVEJA','REFRIGERANTE'}
+        → 'REFRIGERANTE' (match exato de keywords)
+      tipo_pdf='ENERGÉTICOS E ISOTÔNICOS', tipos_existentes={'ENERGETICO','ISOTONICO'}
+        → 'ENERGÉTICOS E ISOTÔNICOS' (sem match exato, mantém como está)
+    """
+    kw_pdf = _tipo_keywords(tipo_pdf)
+    if not kw_pdf:
+        return tipo_pdf
+    for tipo_cat in tipos_existentes:
+        if _tipo_keywords(tipo_cat) == kw_pdf:
+            return tipo_cat
+    return tipo_pdf
+
+
+def _tipo_keywords(s: str) -> set:
+    """
+    Extrai keywords normalizadas (sem acento, singular) de uma string de TIPO.
+    Permite comparar tipos do catálogo e do PDF mesmo com variações:
+      'REFRIGERANTES'                 → {'REFRIGERANTE'}
+      'ENERGÉTICOS E ISOTÔNICOS'      → {'ENERGETICO', 'ISOTONICO'}
+      'REFRIGERANTES/ISOTÔNICOS'      → {'REFRIGERANTE', 'ISOTONICO'}
+      'CERVEJA'                       → {'CERVEJA'}
+    """
+    import re, unicodedata
+    if not s or not str(s).strip():
+        return set()
+    nfd = unicodedata.normalize('NFD', str(s))
+    norm = ''.join(c for c in nfd if not unicodedata.combining(c)).strip().upper()
+    tokens = re.split(r'[/,]|\s+E\s+|\sAND\s', norm)
+    keywords = set()
+    for token in tokens:
+        token = token.strip()
+        if token.endswith('S') and len(token) > 3:
+            token = token[:-1]  # plural simples → singular
+        if token:
+            keywords.add(token)
+    return keywords
 
 
 def _achar_col(df: pd.DataFrame, candidatos: list) -> str | None:

@@ -11,6 +11,7 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import camelot
+from normalizer import normalizar_campos_produto
 
 
 def extrair_precos(caminho_pdf: str) -> pd.DataFrame:
@@ -91,8 +92,16 @@ def extrair_precos(caminho_pdf: str) -> pd.DataFrame:
                 if pd.notna(v) and str(v).strip() not in ('', 'nan') else ''
             )
 
+    # Normaliza MATERIAL, EMBALAGEM e RET/DESC para valores canônicos.
+    # TIPO_PORTARIA é mantido com o valor exato do anexo (ex: 'REFRIGERANTES',
+    # 'ENERGÉTICOS E ISOTÔNICOS', 'REFRIGERANTES/ISOTÔNICOS' em portarias futuras).
+    df_out = df_out.apply(
+        lambda row: pd.Series(normalizar_campos_produto(row.to_dict())),
+        axis=1
+    )
+
     tipos = df_out['TIPO_PORTARIA'].value_counts().to_dict()
-    print(f"[Extrator] {len(df_out)} produtos extraidos. Tipos detectados: {tipos}")
+    print(f"[Extrator] {len(df_out)} produtos extraidos. Tipos do PDF: {tipos}")
     print(f"[Extrator] Colunas: NOME={'sim' if col_nome else 'nao'} | "
           f"RET/DESC={'sim' if col_ret_desc else 'NAO ENCONTRADO'}")
     return df_out

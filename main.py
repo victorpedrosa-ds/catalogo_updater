@@ -16,6 +16,12 @@ DIR_DATA.mkdir(exist_ok=True)
 ITENS_POR_PAGINA = 50
 
 
+def _contar_aprovados(chave_pag: str, n: int) -> int:
+    """Conta quantos checkboxes estao marcados via session_state keys."""
+    return sum(1 for i in range(n)
+               if st.session_state.get(f'{chave_pag}_chk_{i}', False))
+
+
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title('📋 PMPF Updater')
@@ -71,16 +77,27 @@ if processar:
         'descricoes':          descricoes,
         'caminho_xlsx':        str(caminho_xlsx),
         'processado':          True,
-        # Aprovações — preços/novos/descrições: True por padrão; removidos: False
-        'aprov_precos':    {i: True  for i in range(len(mudancas))},
-        'aprov_novos':     {i: True  for i in range(len(novos))},
-        'aprov_removidos': {i: False for i in range(len(removidos))},
-        'aprov_descricoes':{i: True  for i in range(len(descricoes))},
         'pag_precos':    0,
         'pag_novos':     0,
         'pag_removidos': 0,
         'pag_descricoes':0,
     })
+
+    # Limpa estados de checkboxes de processamentos anteriores
+    for _k in [k for k in list(st.session_state.keys())
+               if k.startswith(('pag_precos_chk_', 'pag_novos_chk_',
+                                'pag_removidos_chk_', 'pag_descricoes_chk_'))]:
+        del st.session_state[_k]
+
+    # Inicializa estados dos checkboxes (widget keys são a fonte de verdade)
+    for _i in range(len(mudancas)):
+        st.session_state[f'pag_precos_chk_{_i}']     = True
+    for _i in range(len(novos)):
+        st.session_state[f'pag_novos_chk_{_i}']      = True
+    for _i in range(len(removidos)):
+        st.session_state[f'pag_removidos_chk_{_i}']  = False
+    for _i in range(len(descricoes)):
+        st.session_state[f'pag_descricoes_chk_{_i}'] = True
 
 
 # ── TELA INICIAL ──────────────────────────────────────────────────────────────
@@ -105,10 +122,10 @@ novos      = st.session_state['novos']
 removidos  = st.session_state['removidos']
 descricoes = st.session_state['descricoes']
 
-n_aprov_precos    = sum(1 for v in st.session_state['aprov_precos'].values()    if v)
-n_aprov_novos     = sum(1 for v in st.session_state['aprov_novos'].values()     if v)
-n_aprov_removidos = sum(1 for v in st.session_state['aprov_removidos'].values() if v)
-n_aprov_descricoes= sum(1 for v in st.session_state['aprov_descricoes'].values()if v)
+n_aprov_precos     = _contar_aprovados('pag_precos',     len(mudancas))
+n_aprov_novos      = _contar_aprovados('pag_novos',      len(novos))
+n_aprov_removidos  = _contar_aprovados('pag_removidos',  len(removidos))
+n_aprov_descricoes = _contar_aprovados('pag_descricoes', len(descricoes))
 
 # ── MÉTRICAS GLOBAIS ──────────────────────────────────────────────────────────
 st.title('📋 Resultado do Processamento')
@@ -136,25 +153,25 @@ aba_precos, aba_novos, aba_removidos, aba_descricoes = st.tabs([
 # FUNÇÃO GENÉRICA DE PAGINAÇÃO + CARDS
 # ════════════════════════════════════════════════════════════════════════════
 
-def _renderizar_aba(items, chave_aprov, chave_pag, fn_card, default_aprov=True):
+def _renderizar_aba(items, chave_pag, fn_card, default_aprov=True):
     if not items:
         return
 
-    n          = len(items)
-    aprovacoes = st.session_state[chave_aprov]
+    n = len(items)
 
-    # Botões em bloco
+    # Botoes em bloco — escrevem DIRETAMENTE nas chaves dos widgets
+    # (fonte unica de verdade, evita problemas de sincronizacao)
     col_a, col_b, _ = st.columns([1, 1, 4])
     if col_a.button('✅ Aprovar tudo', key=f'btn_aprov_{chave_pag}'):
         for i in range(n):
-            st.session_state[chave_aprov][i] = True
+            st.session_state[f'{chave_pag}_chk_{i}'] = True
         st.rerun()
     if col_b.button('❌ Rejeitar tudo', key=f'btn_rejeit_{chave_pag}'):
         for i in range(n):
-            st.session_state[chave_aprov][i] = False
+            st.session_state[f'{chave_pag}_chk_{i}'] = False
         st.rerun()
 
-    aprovados_n = sum(1 for v in aprovacoes.values() if v)
+    aprovados_n = _contar_aprovados(chave_pag, n)
     st.caption(f'**{aprovados_n}** de **{n}** aprovados.')
 
     # Paginação
@@ -181,16 +198,18 @@ def _renderizar_aba(items, chave_aprov, chave_pag, fn_card, default_aprov=True):
     fim    = min(inicio + ITENS_POR_PAGINA, n)
 
     for i in range(inicio, fim):
-        item  = items[i]
-        aprov = aprovacoes.get(i, default_aprov)
+        item = items[i]
+        # Garante que a chave do widget exista
+        chk_key = f'{chave_pag}_chk_{i}'
+        if chk_key not in st.session_state:
+            st.session_state[chk_key] = default_aprov
 
         col_card, col_chk = st.columns([5, 1])
         with col_card:
             fn_card(item, i)
         with col_chk:
-            novo_val = st.checkbox('Aprovar', value=aprov, key=f'{chave_pag}_chk_{i}')
-            if novo_val != aprov:
-                st.session_state[chave_aprov][i] = novo_val
+            # Sem value= — a chave do widget e a unica fonte de verdade
+            st.checkbox('Aprovar', key=chk_key)
 
         st.divider()
 
@@ -215,7 +234,7 @@ with aba_precos:
             else:
                 st.success(texto)
 
-        _renderizar_aba(mudancas, 'aprov_precos', 'pag_precos', card_preco)
+        _renderizar_aba(mudancas, 'pag_precos', card_preco)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -250,7 +269,7 @@ with aba_novos:
                 )
             st.info('\n\n'.join(linhas))
 
-        _renderizar_aba(novos, 'aprov_novos', 'pag_novos', card_novo)
+        _renderizar_aba(novos, 'pag_novos', card_novo)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -274,8 +293,7 @@ with aba_removidos:
                 f"Último preço: **{preco_str}** | Última vigência: {r.get('ultima_vigencia') or '—'}"
             )
 
-        _renderizar_aba(removidos, 'aprov_removidos', 'pag_removidos',
-                        card_removido, default_aprov=False)
+        _renderizar_aba(removidos, 'pag_removidos', card_removido, default_aprov=False)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -315,7 +333,7 @@ with aba_descricoes:
                     help='Deixe igual ao atual se não quiser alterar, ou escreva o novo nome desejado.',
                 )
 
-        _renderizar_aba(descricoes, 'aprov_descricoes', 'pag_descricoes', card_descricao)
+        _renderizar_aba(descricoes, 'pag_descricoes', card_descricao)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -324,10 +342,10 @@ with aba_descricoes:
 st.divider()
 st.subheader('💾 Aplicar mudanças aprovadas')
 
-n_p = sum(1 for v in st.session_state['aprov_precos'].values()     if v)
-n_n = sum(1 for v in st.session_state['aprov_novos'].values()      if v)
-n_r = sum(1 for v in st.session_state['aprov_removidos'].values()  if v)
-n_d = sum(1 for v in st.session_state['aprov_descricoes'].values() if v)
+n_p = _contar_aprovados('pag_precos',     len(mudancas))
+n_n = _contar_aprovados('pag_novos',      len(novos))
+n_r = _contar_aprovados('pag_removidos',  len(removidos))
+n_d = _contar_aprovados('pag_descricoes', len(descricoes))
 total_aprov = n_p + n_n + n_r + n_d
 
 col_info, col_btn = st.columns([4, 2])
@@ -343,12 +361,16 @@ if col_btn.button('💾 Aplicar e salvar catálogo',
                    type='primary', use_container_width=True,
                    disabled=(total_aprov == 0)):
 
-    aprovadas_precos    = [mudancas[i]   for i, v in st.session_state['aprov_precos'].items()     if v]
-    aprovados_novos     = [novos[i]      for i, v in st.session_state['aprov_novos'].items()      if v]
-    aprovados_removidos = [removidos[i]  for i, v in st.session_state['aprov_removidos'].items()  if v]
+    aprovadas_precos    = [mudancas[i]  for i in range(len(mudancas))
+                            if st.session_state.get(f'pag_precos_chk_{i}',    True)]
+    aprovados_novos     = [novos[i]     for i in range(len(novos))
+                            if st.session_state.get(f'pag_novos_chk_{i}',     True)]
+    aprovados_removidos = [removidos[i] for i in range(len(removidos))
+                            if st.session_state.get(f'pag_removidos_chk_{i}', False)]
     aprovadas_descricoes = [
         {**descricoes[i], 'nome_catalogo': st.session_state.get(f'nome_cat_{i}', '')}
-        for i, v in st.session_state['aprov_descricoes'].items() if v
+        for i in range(len(descricoes))
+        if st.session_state.get(f'pag_descricoes_chk_{i}', True)
     ]
 
     with st.spinner('Aplicando mudanças e salvando catálogo...'):

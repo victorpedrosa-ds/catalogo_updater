@@ -18,6 +18,10 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.comments import Comment
+from normalizer import (
+    normalizar_tipo, normalizar_tipo_gtin,
+    normalizar_material, normalizar_embalagem, normalizar_ret_desc,
+)
 
 ABA_GTIN      = 'GTIN'
 ABA_PRECO     = 'PRECO-VIGENCIA'
@@ -160,13 +164,10 @@ def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
         if col_g_valido:
             ws_gtin.cell(nova_g, col_g_valido).value  = True
         if col_g_tipo:
-            # Usa o titulo exato do anexo para compor o TIPO GTIN.
-            # Formato: 'GTIN PORTARIA - {TITULO DO ANEXO}'
-            # Funciona para qualquer tipo presente ou futuro na portaria.
+            # TIPO GTIN: 'GTIN PORTARIA - {TIPO EXATO DO ANEXO}'
             if tipo_portaria:
                 tipo_gtin_val = f'GTIN PORTARIA - {tipo_portaria}'
             else:
-                # Fallback: copia da linha anterior
                 tipo_anterior = ws_gtin.cell(ultima_gtin, col_g_tipo).value
                 tipo_gtin_val = (tipo_anterior
                                  if tipo_anterior and not str(tipo_anterior).startswith('=')
@@ -197,8 +198,8 @@ def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
 
             if col_p_id:
                 ws_prod.cell(nova_p, col_p_id).value       = id_produto
-            # Col 3: TIPO — usa o titulo exato do anexo no PDF.
-            # Aberto para qualquer tipo futuro sem necessidade de alterar o codigo.
+            # Col 3: TIPO — usa o texto EXATO do anexo do PDF
+            # (ex: 'REFRIGERANTES', 'ENERGÉTICOS E ISOTÔNICOS', 'REFRIGERANTES/ISOTÔNICOS')
             col_p_tipo = _col_num(ws_prod, ['TIPO'])
             if col_p_tipo and tipo_portaria:
                 ws_prod.cell(nova_p, col_p_tipo).value = tipo_portaria
@@ -208,16 +209,16 @@ def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
             if col_p_portaria:
                 ws_prod.cell(nova_p, col_p_portaria).value = nome or None
             if col_p_emb:
-                ws_prod.cell(nova_p, col_p_emb).value      = embalagem or None
+                ws_prod.cell(nova_p, col_p_emb).value      = normalizar_embalagem(embalagem) or None
             if col_p_vol and volume:
                 try:
                     ws_prod.cell(nova_p, col_p_vol).value  = int(volume)
                 except (ValueError, TypeError):
                     ws_prod.cell(nova_p, col_p_vol).value  = volume
             if col_p_mat:
-                ws_prod.cell(nova_p, col_p_mat).value      = material or None
+                ws_prod.cell(nova_p, col_p_mat).value      = normalizar_material(material) or None
             if col_p_ret:
-                ws_prod.cell(nova_p, col_p_ret).value      = ret_desc or None
+                ws_prod.cell(nova_p, col_p_ret).value      = normalizar_ret_desc(ret_desc) or None
             # Col 5 MARCA/DESCRICAO CATALOGO: em branco para preenchimento manual
 
             _replicar_formulas(ws_prod, ultima_prod, nova_p, colunas_preenchidas={
@@ -263,7 +264,7 @@ def _inserir_precos_novos(wb, novos_aprovados: list[dict], ids_novos: dict):
         ws.cell(nova_linha, 1).value = proximo_id_linha
         ws.cell(nova_linha, 2).value = id_produto
         ws.cell(nova_linha, 3).value = vig_dt
-        ws.cell(nova_linha, 4).value = None
+        ws.cell(nova_linha, 4).value = hoje   # Data de inclusão e outras obs
         ws.cell(nova_linha, 5).value = preco
 
         for col in [6, 7, 8]:
@@ -280,7 +281,8 @@ def _inserir_precos_novos(wb, novos_aprovados: list[dict], ids_novos: dict):
 # ════════════════════════════════════════════════════════════════════════════
 
 def _aplicar_precos(wb, mudancas_aprovadas: list[dict]):
-    ws = wb[ABA_PRECO]
+    ws  = wb[ABA_PRECO]
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     ultima_linha = _ultima_linha_com_dado(ws)
     ultimo_id_row = ws.cell(ultima_linha, 1).value
@@ -306,7 +308,7 @@ def _aplicar_precos(wb, mudancas_aprovadas: list[dict]):
         ws.cell(nova_linha, 1).value = proximo_id
         ws.cell(nova_linha, 2).value = id_produto
         ws.cell(nova_linha, 3).value = vig_dt
-        ws.cell(nova_linha, 4).value = None
+        ws.cell(nova_linha, 4).value = hoje   # Data de inclusão e outras obs
         ws.cell(nova_linha, 5).value = preco_novo
 
         for col in [6, 7, 8]:
