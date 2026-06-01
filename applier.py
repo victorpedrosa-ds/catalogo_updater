@@ -233,8 +233,9 @@ def _inserir_novos_produtos(wb, novos_aprovados: list[dict]) -> dict:
     return ids_novos
 
 def _inserir_precos_novos(wb, novos_aprovados: list[dict], ids_novos: dict):
-    """Insere o preço inicial dos novos produtos em PRECO-VIGENCIA."""
-    ws = wb[ABA_PRECO]
+    """Insere o preco inicial dos novos produtos em PRECO-VIGENCIA."""
+    ws   = wb[ABA_PRECO]
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     ultima_linha = _ultima_linha_com_dado(ws)
     ultimo_id_row = ws.cell(ultima_linha, 1).value
