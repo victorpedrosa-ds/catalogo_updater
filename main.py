@@ -1,11 +1,9 @@
-"""
-main.py — PMPF Updater
-Execute com: py -m streamlit run main.py
-"""
+
+# Executar com: py -m streamlit run main.py
+
 
 import streamlit as st
 from pathlib import Path
-
 from extractor  import extrair_precos
 from comparator import carregar_catalogo, comparar_precos
 from applier    import aplicar_todas_mudancas
@@ -17,7 +15,7 @@ ITENS_POR_PAGINA = 50
 
 
 def _contar_aprovados(chave_pag: str, n: int) -> int:
-    """Conta quantos checkboxes estao marcados via session_state keys."""
+    # Conta quantos checkboxes estao marcados via session_state keys.
     return sum(1 for i in range(n)
                if st.session_state.get(f'{chave_pag}_chk_{i}', False))
 
@@ -159,8 +157,7 @@ def _renderizar_aba(items, chave_pag, fn_card, default_aprov=True):
 
     n = len(items)
 
-    # Botoes em bloco — escrevem DIRETAMENTE nas chaves dos widgets
-    # (fonte unica de verdade, evita problemas de sincronizacao)
+    # Botoes em bloco — escrevem diretamente nas chaves dos widgets
     col_a, col_b, _ = st.columns([1, 1, 4])
     if col_a.button('✅ Aprovar tudo', key=f'btn_aprov_{chave_pag}'):
         for i in range(n):

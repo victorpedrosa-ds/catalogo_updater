@@ -191,7 +191,6 @@ def _encontrar_coluna(df: pd.DataFrame, candidatos: list) -> str | None:
                 return col
     return None
 
-
 def _limpar_preco(valor) -> float | None:
     if pd.isna(valor):
         return None
